@@ -18,11 +18,20 @@ import re
 import pydantic
 
 
-def parse_default_dynamic_keyword_insertion(text: str) -> str:
-  """Replaces dynamic keyword insertion with the default keyword.
+# See https://support.google.com/google-ads/answer/6371157
+def parse_google_ads_special_variables(text: str) -> str:
+  """Replaces any special variables used by Google Ads with the default string.
 
-  For example "Buy {KeyWord:my keyword} now" would be replaced with "Buy my
-  keyword now".
+  First replaces dynamic keyword insertion with the default keyword. How the
+  text is inserted depends on the capitalization:
+    "Buy {KeyWord:my keyword} now" -> "Buy My Keyword now"
+    "Buy {Keyword:my keyword} now" -> "Buy My keyword now"
+    "Buy {keyword:my keyword} now" -> "Buy my keyword now"
+    "Buy {KEYWord:my keyword} now" -> "Buy MY Keyword now"
+    "Buy {KeyWORD:my keyword} now" -> "Buy My KEYWORD now"
+
+  Then replaces any other customizers with the default value:
+    "Buy {CUSTOMIZER.product:my product} now" -> "Buy my product now"
 
   Args:
     text: The text to parse.
@@ -30,8 +39,43 @@ def parse_default_dynamic_keyword_insertion(text: str) -> str:
   Returns:
     The text with the default keyword inserted.
   """
+  # Title Case
   pattern = r"\{KeyWord:([^}]+)\}"  # The regex pattern
-  return re.sub(pattern, r"\1", text)
+  text = re.sub(pattern, lambda m: m.group(1).title(), text)
+
+  # First Word Capitalized
+  pattern = r"\{Keyword:([^}]+)\}"  # The regex pattern
+  text = re.sub(pattern, lambda m: m.group(1).capitalize(), text)
+
+  # Lower Case
+  pattern = r"\{keyword:([^}]+)\}"  # The regex pattern
+  text = re.sub(pattern, lambda m: m.group(1).lower(), text)
+
+  # Caps First Word
+  pattern = r"\{KEYWord:([^}]+)\}"  # The regex pattern
+  text = re.sub(
+      pattern,
+      lambda m: m.group(1).split()[0].upper()
+      + " "
+      + " ".join(m.group(1).split()[1:]).title(),
+      text,
+  )
+
+  # Caps Last Word
+  pattern = r"\{KeyWORD:([^}]+)\}"  # The regex pattern
+  text = re.sub(
+      pattern,
+      lambda m: " ".join(m.group(1).split()[:-1]).title()
+      + " "
+      + m.group(1).split()[-1].upper(),
+      text,
+  )
+
+  # Customizers
+  pattern = r"\{CUSTOMIZER\.([a-zA-Z0-9_]+):([^}]+)\}"
+  text = re.sub(pattern, lambda m: m.group(2), text)
+
+  return text
 
 
 class GoogleAd(pydantic.BaseModel):
@@ -43,8 +87,8 @@ class GoogleAd(pydantic.BaseModel):
   final ad copy.
   """
 
-  headlines: list[str]  # The list of headlines for the ad.
-  descriptions: list[str]  # The list of descriptions for the ad.
+  headlines: list[str] = []  # The list of headlines for the ad.
+  descriptions: list[str] = []  # The list of descriptions for the ad.
 
   def __str__(self) -> str:
     """Returns the headlines and descriptions as a string.
@@ -69,6 +113,13 @@ class GoogleAd(pydantic.BaseModel):
   def description_count(self) -> int:
     """The number of descriptions in the ad copy."""
     return len(self.descriptions)
+
+  def __add__(self, other: "GoogleAd") -> "GoogleAd":
+    """Adds two GoogleAds together."""
+    return self.__class__(
+        headlines=self.headlines + other.headlines,
+        descriptions=self.descriptions + other.descriptions,
+    )
 
 
 class GoogleAdFormat(pydantic.BaseModel):

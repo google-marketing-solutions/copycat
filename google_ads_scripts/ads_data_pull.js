@@ -40,6 +40,22 @@ const SPREADSHEETURL = 'insert spreadsheet URL here';
 const DATE_BEGIN = 'YYYY-MM-DD';
 const DATE_END = 'YYYY-MM-DD';
 
+// Comma separated list of Account IDs to include in the report
+// This is empty by default, meaning that all accounts will be included
+// If you add one or more account IDs below, only those will be included!
+// Use double quotes for each ID, as shown in the example below.
+// Example:
+// const ACCOUNT_IDS = ["111-222-3333","444-555-6666"];
+const ACCOUNT_IDS = [];
+
+// Comma separated list of Campaign IDs to include in the report
+// This is empty by default, meaning that all campaigns will be included
+// If you add one or more campaign IDs below, only those will be included!
+// No quotes are required in this case, as shown in the example below.
+// Example:
+// const CAMPAIGN_IDS = [12345678901,98765432109];
+const CAMPAIGN_IDS = [];
+
 // Max number of headlines and descriptions to pull. These are the max values
 // that can be set for a responsive search ad.
 const MAX_NUM_HEADLINES = 15;
@@ -53,7 +69,7 @@ function main() {
   Logger.log(
       'Starting scipt execution in the following timeframe: ' + DATE_BEGIN +
       ' - ' + DATE_END);
-  const sheet = writeSpreadsheetHeader();
+  const sheet = writeSpreadsheetHeader(AdsApp.currentAccount().getCustomerId());
 
   try {
     if (isAccountMCC()) {
@@ -61,8 +77,16 @@ function main() {
       const accountIterator = AdsManagerApp.accounts().get();
       while (accountIterator.hasNext()) {
         const currentAccount = accountIterator.next();
-        AdsManagerApp.select(currentAccount);
-        getCleanData(currentAccount, sheet);
+        let currentAccountID = currentAccount.getCustomerId();
+        if (ACCOUNT_IDS.length != null && ACCOUNT_IDS.length > 0) {
+          if (ACCOUNT_IDS.indexOf(currentAccountID) >= 0) {
+	          AdsManagerApp.select(currentAccount);
+	          getCleanData(currentAccount, sheet);
+	        }
+        } else {
+            AdsManagerApp.select(currentAccount);
+	          getCleanData(currentAccount, sheet);
+        }
       }
     } else {
       const currentAccount = AdsApp.currentAccount();
@@ -90,15 +114,21 @@ function isAccountMCC() {
 
 /**
  * Writes the spreadsheet header to the spreadsheet.
+ * @param {string} account The account to get the data for.
  * @return {!Sheet} The sheet object.
  */
-function writeSpreadsheetHeader() {
+function writeSpreadsheetHeader(account) {
   const ss = SpreadsheetApp.openByUrl(SPREADSHEETURL);
-  const sheet = ss.getActiveSheet();
+  let sheet = ss.getSheetByName(account);
+  if (sheet == null) {
+    sheet = ss.insertSheet();
+    sheet.setName(account);
+  }
   sheet.clear();
   const titleRow = [
-    'Account', 'Campaign Name', 'Ad Group name', 'Ad ID', 'Ad Type',
-    'Ad Strength', 'Ad Final URLs', 'Keywords',
+    'Account ID', 'Account', 'Campaign ID' , 'Campaign Name', 'Ad Group ID',
+    'Ad Group name', 'Ad ID', 'Ad Type', 'Ad Strength', 'Ad Final URLs',
+    'Keywords',
   ];
   for (let i = 1; i <= MAX_NUM_HEADLINES; i++) {
     titleRow.push('Headline ' + i);
@@ -119,10 +149,10 @@ function getCleanData(account, sheet) {
   Logger.log(
       'Processing account ' + account.getCustomerId() + ' - ' +
       account.getName());
-  const query = 'SELECT ad_group_ad.ad.id, ' +
+  let query = 'SELECT ad_group.id, ad_group_ad.ad.id, ' +
       'ad_group_ad.ad.responsive_search_ad.descriptions, ' +
       'ad_group_ad.ad.responsive_search_ad.headlines, ' +
-      'campaign.name, ad_group.name, ' +
+      'campaign.id, campaign.name, ad_group.name, ' +
       'ad_group_ad.ad_strength,  ' +
       'ad_group_ad.ad.type, ' +
       'ad_group_ad.ad.final_urls ' +
@@ -131,10 +161,18 @@ function getCleanData(account, sheet) {
       'ad_group_ad.status = \'ENABLED\' AND ' +
       'ad_group_ad.ad.type = \'RESPONSIVE_SEARCH_AD\' AND ' +
       'segments.date BETWEEN \'' + DATE_BEGIN + '\' AND \'' + DATE_END + '\'';
+
+  // Add filter by campaign ID if the list has any values
+  if (CAMPAIGN_IDS.length != null && CAMPAIGN_IDS.length > 0) {
+    query = query + ' AND campaign.id IN (' + CAMPAIGN_IDS.toString() + ')';
+  }
+
   const searchResults = AdsApp.search(query);
 
   for (const row of searchResults) {
+    const campaignID = row.campaign.id;
     const campaignName = row.campaign.name;
+    const adGroupID = row.adGroup.id;
     const adGroupName = row.adGroup.name;
     const adID = row.adGroupAd.ad.id;
     const keywords = getKeywords(adGroupName, campaignName);
@@ -144,8 +182,8 @@ function getCleanData(account, sheet) {
     const adType = row.adGroupAd.ad.type;
     const adURLs = (row.adGroupAd.ad.finalUrls).join(',');
     const rowToAdd = [
-      account.getName(), campaignName, adGroupName, adID, adType, adStrength,
-      adURLs, keywords
+      account.getCustomerId(), account.getName(), campaignID, campaignName,
+      adGroupID, adGroupName, adID, adType, adStrength, adURLs, keywords
     ];
     for (let i = 1; i <= MAX_NUM_HEADLINES; i++) {
       if (headlines.length >= i) {
@@ -185,7 +223,8 @@ function getKeywords(adGroupName, campaignName) {
   for (const row of searchResults) {
     setKeyword.add(row.adGroupCriterion.keyword.text);
   }
-  return Array.from(setKeyword).join(',');
+  // Fix to support keyword lists where the first keyword begins with a + sign
+  return `'` + Array.from(setKeyword).join(',');
 }
 /**
  * Escapes a string for use in a Google Ads query.

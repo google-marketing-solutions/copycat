@@ -579,6 +579,69 @@ class AdCopyEvaluatorTest(parameterized.TestCase):
     )
     self.assertEqual(results, expected_results)
 
+  @parameterized.named_parameters([
+      {
+          "testcase_name": "no special variables",
+          "headlines": ["headline 1", "headline 2"],
+          "descriptions": ["description 1", "description 2"],
+          "expected_response": False,
+      },
+      {
+          "testcase_name": "headline dki",
+          "headlines": ["headline {KeyWord:my keyword}", "headline 2"],
+          "descriptions": ["description 1", "description 2"],
+          "expected_response": False,
+      },
+      {
+          "testcase_name": "description dki",
+          "headlines": ["headline 1", "headline 2"],
+          "descriptions": ["description {KeyWord:my keyword}", "description 2"],
+          "expected_response": False,
+      },
+      {
+          "testcase_name": "headline customizer",
+          "headlines": [
+              "headline {CUSTOMIZER.product:my product}",
+              "headline 2",
+          ],
+          "descriptions": ["description 1", "description 2"],
+          "expected_response": False,
+      },
+      {
+          "testcase_name": "description customizer",
+          "headlines": ["headline 1", "headline 2"],
+          "descriptions": [
+              "description {CUSTOMIZER.product:my product}",
+              "description 2",
+          ],
+          "expected_response": False,
+      },
+      {
+          "testcase_name": "headline customizer no default",
+          "headlines": ["headline {CUSTOMIZER.product}", "headline 2"],
+          "descriptions": ["description 1", "description 2"],
+          "expected_response": True,
+      },
+      {
+          "testcase_name": "description customizer no default",
+          "headlines": ["headline 1", "headline 2"],
+          "descriptions": ["description {CUSTOMIZER.product}", "description 2"],
+          "expected_response": True,
+      },
+  ])
+  def test_has_unfillable_google_ads_special_variables(
+      self, headlines, descriptions, expected_response
+  ):
+    google_ad = google_ads.GoogleAd(
+        headlines=headlines,
+        descriptions=descriptions,
+    )
+    evaluator = ad_copy_evaluator.AdCopyEvaluator(self.ad_format)
+    self.assertEqual(
+        evaluator.has_unfillable_google_ads_special_variables(google_ad),
+        expected_response,
+    )
+
 
 if __name__ == "__main__":
   absltest.main()

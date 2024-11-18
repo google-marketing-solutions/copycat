@@ -18,6 +18,7 @@ Contains the code to generate copycat ad copies.
 """
 
 import dataclasses
+import logging
 
 from google.cloud import storage
 from vertexai import generative_models
@@ -25,6 +26,10 @@ from vertexai import generative_models
 from copycat import ad_copy_generator
 
 ModelName = ad_copy_generator.ModelName
+
+
+LOGGER = logging.getLogger(__name__)
+LOGGER.setLevel(logging.INFO)
 
 
 STYLE_PROMPT_IF_AD_REPORT_FROM_GCS = """\
@@ -125,7 +130,7 @@ class StyleGuideGenerator:
         }
         file_info.append(file_data)
     self.file_info = file_info
-    print(f"Successfully retrieved {len(file_info)} file URI's")
+    LOGGER.info("Successfully retrieved %d file URI's.", len(file_info))
     return file_info
 
   def generate_style_guide(
@@ -186,6 +191,9 @@ class StyleGuideGenerator:
         contents=[content], generation_config=generation_config
     )
     if not isinstance(response, generative_models.GenerationResponse):
+      LOGGER.error(
+          "Response is not a GenerationResponse. Instead got: %s", response
+      )
       raise RuntimeError(
           f"Response is not a GenerationResponse. Instead got: {response}"
       )
@@ -209,6 +217,7 @@ class StyleGuideGenerator:
     style_prompt_params = style_prompt_params or {}
 
     if ad_copy_vectorstore is not None:
+      LOGGER.info("Using ad copy vectorstore for style guide generation.")
       style_prompt_params["example_ads_json"] = (
           ad_copy_vectorstore.ad_exemplars[
               ["keywords", "headlines", "descriptions"]
@@ -236,7 +245,7 @@ class StyleGuideGenerator:
     contents.append(text_part)
 
     if len(contents) == 1:
-      print(
+      LOGGER.info(
           "No files were staged, continuing without brand style files or"
           " examples."
       )

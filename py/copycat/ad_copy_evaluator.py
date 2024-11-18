@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import dataclasses
+import re
 
 import pydantic
 from sklearn.metrics import pairwise
@@ -40,7 +41,9 @@ def _normalized_cosine_similarity(
     embedding_1: list[float], embedding_2: list[float]
 ) -> float:
   """Calculate the cosine similarity normalized to a value between 0 and 1."""
-  similarity = pairwise.cosine_similarity([embedding_1], [embedding_2])[0][0]
+  similarity = float(
+      pairwise.cosine_similarity([embedding_1], [embedding_2])[0][0]
+  )
   return min(max((1.0 + similarity) / 2.0, 0.0), 1.0)
 
 
@@ -109,7 +112,7 @@ class AdCopyEvaluator:
       ad_copy: The ad copy to evaluate.
     """
     return all(
-        len(google_ads.parse_default_dynamic_keyword_insertion(headline))
+        len(google_ads.parse_google_ads_special_variables(headline))
         <= self.ad_format.max_headline_length
         for headline in ad_copy.headlines
     )
@@ -124,7 +127,7 @@ class AdCopyEvaluator:
       ad_copy: The ad copy to evaluate.
     """
     return all(
-        len(google_ads.parse_default_dynamic_keyword_insertion(description))
+        len(google_ads.parse_google_ads_special_variables(description))
         <= self.ad_format.max_description_length
         for description in ad_copy.descriptions
     )
@@ -164,6 +167,39 @@ class AdCopyEvaluator:
         and self.has_unique_headlines(ad_copy)
         and self.has_unique_descriptions(ad_copy)
     )
+
+  def has_unfillable_google_ads_special_variables(
+      self, ad_copy: GoogleAd
+  ) -> bool:
+    """Returns true if the ad contains special variables that cannot be filled.
+
+    Special variables are things like Dynamic Keyword Insertion (DKI) and
+    Customizers, and they are always filled with their default if possible
+    before being sent to Copycat.
+
+    If a special variable cant be filled because it doesn't have a default,
+    then it will be left as it is. This function checks for this case,
+    because these ads should not be sent to Copycat, but will need to be
+    handled manually by the user.
+
+    Args:
+      ad_copy: The ad copy to evaluate.
+    """
+    for headline in ad_copy.headlines:
+      cleaned_headline = google_ads.parse_google_ads_special_variables(headline)
+      unfilled_variables = re.findall(r"({.*?})", cleaned_headline)
+      if unfilled_variables:
+        return True
+
+    for description in ad_copy.descriptions:
+      cleaned_description = google_ads.parse_google_ads_special_variables(
+          description
+      )
+      unfilled_variables = re.findall(r"({.*?})", cleaned_description)
+      if unfilled_variables:
+        return True
+
+    return False
 
   def is_complete(self, ad_copy: GoogleAd) -> bool:
     """Returns true if the ad copy is complete.

@@ -300,4 +300,7 @@ def copycat_instances_are_equal(
   if copycat_1.ad_format != copycat_2.ad_format:
     return False
 
+  if copycat_1.style_guide != copycat_2.style_guide:
+    return False
+
   return True

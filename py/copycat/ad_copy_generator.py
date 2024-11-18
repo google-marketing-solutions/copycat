@@ -18,8 +18,9 @@ import dataclasses
 import enum
 import functools
 import json
+import logging
 import re
-from typing import Any, AsyncIterable, Coroutine, Hashable, TypeVar, Union
+from typing import Any, AsyncIterable, Coroutine, Hashable, TypeVar
 
 import bs4
 from vertexai import generative_models
@@ -30,9 +31,23 @@ import pydantic
 import requests
 from sklearn import cluster
 from sklearn import neighbors
-import tqdm.autonotebook as tqdm
+import tqdm
 
 from copycat import google_ads
+
+
+LOGGER = logging.getLogger(__name__)
+LOGGER.setLevel(logging.INFO)
+
+
+class TqdmLogger:
+  """File-like class redirecting tqdm progress bar to LOGGER."""
+
+  def write(self, msg: str) -> None:
+    LOGGER.info(msg.lstrip("\r"))
+
+  def flush(self) -> None:
+    pass
 
 
 AsyncGenerationResponse = Coroutine[
@@ -59,8 +74,14 @@ VECTORSTORE_AD_EXEMPLARS_FILE_NAME = "vectorstore_ad_exemplars.csv"
 
 class ModelName(enum.Enum):
   GEMINI_1_0_PRO = "gemini-pro"
-  GEMINI_1_5_PRO = "gemini-1.5-pro-preview-0514"
-  GEMINI_1_5_FLASH = "gemini-1.5-flash-preview-0514"
+  GEMINI_1_5_PRO_PREVIEW = "gemini-1.5-pro-preview-0514"
+  GEMINI_1_5_PRO_001 = "gemini-1.5-pro-001"
+  GEMINI_1_5_PRO_002 = "gemini-1.5-pro-002"
+  GEMINI_1_5_PRO = "gemini-1.5-pro-002"
+  GEMINI_1_5_FLASH_PREVIEW = "gemini-1.5-flash-preview-0514"
+  GEMINI_1_5_FLASH_001 = "gemini-1.5-flash-001"
+  GEMINI_1_5_FLASH_002 = "gemini-1.5-flash-002"
+  GEMINI_1_5_FLASH = "gemini-1.5-flash-002"
 
 
 class EmbeddingModelName(enum.Enum):
@@ -77,6 +98,7 @@ class TextGenerationRequest(pydantic.BaseModel):
   """The request to generate text."""
 
   keywords: str
+  existing_ad_copy: GoogleAd
   system_instruction: str
   prompt: list[generative_models.Content]
   chat_model_name: ModelName
@@ -92,6 +114,19 @@ class TextGenerationRequest(pydantic.BaseModel):
     lines = [
         "**Keywords:**",
         self.keywords,
+    ]
+
+    if self.existing_ad_copy.headlines:
+      lines.extend(
+          ["**Existing headlines:**", f"{self.existing_ad_copy.headlines}"]
+      )
+    if self.existing_ad_copy.descriptions:
+      lines.extend([
+          "**Existing descriptions:**",
+          f"{self.existing_ad_copy.descriptions}",
+      ])
+
+    lines.extend([
         "**Model Parameters:**",
         f"Model name: {self.chat_model_name.value}",
         f"Temperature: {self.temperature}",
@@ -100,7 +135,7 @@ class TextGenerationRequest(pydantic.BaseModel):
         f"Safety settings: {self.safety_settings}",
         "**System instruction:**",
         self.system_instruction,
-    ]
+    ])
 
     for content in self.prompt:
       lines.append(f"**{content.role.title()}:**")
@@ -186,13 +221,25 @@ class AdCopyVectorstore:
         embedding_model_name.value
     )
     n_batches = np.ceil(len(texts) / batch_size)
+    LOGGER.debug(
+        "Using embedding model: %s, dimensionality: %d, task type: %s",
+        embedding_model_name.value,
+        dimensionality,
+        task_type,
+    )
+    LOGGER.debug(
+        "Generating %d embeddings in %d batches.", len(texts), n_batches
+    )
 
     embeddings = []
 
     texts_batch_iterator = np.array_split(texts, n_batches)
     if progress_bar:
       texts_batch_iterator = tqdm.tqdm(
-          texts_batch_iterator, desc="Generating embeddings"
+          texts_batch_iterator,
+          desc="Generating embeddings",
+          file=TqdmLogger(),
+          mininterval=5,
       )
 
     for texts_batch in texts_batch_iterator:
@@ -205,6 +252,7 @@ class AdCopyVectorstore:
       )
       embeddings.extend([emb.values for emb in embedding_outputs])
 
+    LOGGER.debug("Embeddings generated.")
     return embeddings
 
   def embed_documents(self, texts: list[str]) -> list[list[float]]:
@@ -239,6 +287,7 @@ class AdCopyVectorstore:
       max_exemplars: int,
   ) -> pd.DataFrame:
     """Uses Affinity Propagation to find exemplar ads."""
+    LOGGER.info("Getting exemplars with Affinity Propagation.")
     embeddings = np.asarray(data[embeddings_column].values.tolist())
 
     clusterer = cluster.AffinityPropagation(preference=affinity_preference)
@@ -250,8 +299,15 @@ class AdCopyVectorstore:
     )
 
     if len(exemplars) > max_exemplars:
+      LOGGER.info(
+          "Affinity Propagation returned too many exemplars (%d). Sampling to"
+          " get %d.",
+          len(exemplars),
+          max_exemplars,
+      )
       exemplars = exemplars.sample(max_exemplars)
 
+    LOGGER.info("Got %d exemplars with Affinity Propagation.", len(exemplars))
     return exemplars
 
   @classmethod
@@ -269,6 +325,9 @@ class AdCopyVectorstore:
     Returns:
       The deduplicated training data.
     """
+    n_starting_rows = len(data)
+    LOGGER.info("Deduplicating ads (starting with %d rows).", n_starting_rows)
+
     data = data.copy()
     data["headlines"] = data["headlines"].apply(tuple)
     data["descriptions"] = data["descriptions"].apply(tuple)
@@ -279,6 +338,12 @@ class AdCopyVectorstore:
     )
     data["headlines"] = data["headlines"].apply(list)
     data["descriptions"] = data["descriptions"].apply(list)
+
+    n_deduped_rows = len(data)
+    LOGGER.info(
+        "Deduplication removed %d rows.", n_starting_rows - n_deduped_rows
+    )
+
     return data
 
   @classmethod
@@ -348,10 +413,17 @@ class AdCopyVectorstore:
 
     Returns:
       An instance of the AdCopyVectorstore containing the exemplar ads.
+
+    Raises:
+      ValueError: If the exemplar selection method is not supported.
     """
     embedding_model_name = EmbeddingModelName(embedding_model_name)
     exemplar_selection_method = ExemplarSelectionMethod(
         exemplar_selection_method
+    )
+    LOGGER.info(
+        "Creating AdCopyVectorstore from %d rows of training data.",
+        len(training_data),
     )
 
     data = (
@@ -361,9 +433,14 @@ class AdCopyVectorstore:
     )
 
     if len(data) > max_initial_ads:
+      LOGGER.info("Sampling %d ads from %d ads.", max_initial_ads, len(data))
       data = data.sample(max_initial_ads)
 
     data["ad_markdown"] = data.apply(lambda x: str(GoogleAd(**x)), axis=1)
+    LOGGER.info(
+        "Finding exemplar ads with method = %s.",
+        exemplar_selection_method.value,
+    )
     if (
         exemplar_selection_method
         is ExemplarSelectionMethod.AFFINITY_PROPAGATION
@@ -399,13 +476,18 @@ class AdCopyVectorstore:
       )
 
     else:
-      raise RuntimeError(
+      LOGGER.error(
+          "Unsupported exemplar selection method: %s",
+          exemplar_selection_method.value,
+      )
+      raise ValueError(
           f"Unsupported exemplar selection method: {exemplar_selection_method}"
       )
 
-    print(
-        f"Reduced {len(training_data)} total ads to"
-        f" {len(ad_exemplars)} exemplar ads."
+    LOGGER.info(
+        "Reduced %d total ads to %d exemplar ads.",
+        len(training_data),
+        len(ad_exemplars),
     )
 
     return cls(
@@ -416,35 +498,81 @@ class AdCopyVectorstore:
     )
 
   @classmethod
-  def load(cls, path: str) -> "AdCopyVectorstore":
-    """Loads the vectorstore from the provided path."""
+  def from_dict(cls, params: dict[str, Any]) -> "AdCopyVectorstore":
+    """Loads the vectorstore from the provided dict.
 
-    with open(f"{path}/{VECTORSTORE_PARAMS_FILE_NAME}", "r") as f:
-      params = json.load(f)
+    Schema of params:
+      embedding_model_name: The name of the embedding model to use.
+      ad_exemplars: The ad exemplars to use in the vectorstore, as a pandas
+        dataframe that has been converted to a dict with to_dict("tight").
+      dimensionality: The dimensionality of the embedding model.
+      embeddings_batch_size: The batch size to use when generating embeddings.
 
+    Args:
+      params: The dict containing the parameters to use to create the
+        AdCopyVectorstore. See above for the schema.
+
+    Returns:
+      An instance of the AdCopyVectorstore.
+
+    Raises:
+      KeyError: If any of the required keys are missing from the dict.
+    """
+    required_keys = {
+        "embedding_model_name",
+        "ad_exemplars",
+        "dimensionality",
+        "embeddings_batch_size",
+    }
+    missing_keys = required_keys - set(params.keys())
+    if missing_keys:
+      LOGGER.error("Missing required keys: %s", missing_keys)
+      raise KeyError(f"Missing required keys: {missing_keys}")
+
+    params = params.copy()
     params["embedding_model_name"] = EmbeddingModelName(
         params["embedding_model_name"]
     )
-    params["ad_exemplars"] = pd.read_parquet(
-        f"{path}/{VECTORSTORE_AD_EXEMPLARS_FILE_NAME}"
+    params["ad_exemplars"] = pd.DataFrame.from_dict(
+        params["ad_exemplars"], orient="tight"
     )
-
     return cls(**params)
 
-  def write(self, path: str) -> None:
-    """Writes the vectorstore to the provided path."""
+  @classmethod
+  def from_json(cls, json_string: str) -> "AdCopyVectorstore":
+    """Loads the vectorstore from the provided json string.
 
-    params = {
+    Schema of params:
+      embedding_model_name: The name of the embedding model to use.
+      ad_exemplars: The ad exemplars to use in the vectorstore, as a pandas
+        dataframe that has been converted to a dict with to_dict("tight").
+      dimensionality: The dimensionality of the embedding model.
+      embeddings_batch_size: The batch size to use when generating embeddings.
+
+    Args:
+      json_string: The json string containing the parameters to use to create
+        the AdCopyVectorstore. See above for the schema.
+
+    Returns:
+      An instance of the AdCopyVectorstore.
+
+    Raises:
+      KeyError: If any of the required keys are missing from the dict.
+    """
+    return cls.from_dict(json.loads(json_string))
+
+  def to_dict(self) -> dict[str, Any]:
+    """Serializes the vectorstore to a dict."""
+    return {
         "embedding_model_name": self.embedding_model_name.value,
         "dimensionality": self.dimensionality,
         "embeddings_batch_size": self.embeddings_batch_size,
+        "ad_exemplars": self.ad_exemplars.to_dict(orient="tight"),
     }
-    with open(f"{path}/{VECTORSTORE_PARAMS_FILE_NAME}", "w") as f:
-      json.dump(params, f)
 
-    self.ad_exemplars.to_parquet(
-        f"{path}/{VECTORSTORE_AD_EXEMPLARS_FILE_NAME}", index=False
-    )
+  def to_json(self) -> str:
+    """Serializes the vectorstore to a json string."""
+    return json.dumps(self.to_dict())
 
   @functools.cached_property
   def nearest_neighbors(self) -> neighbors.NearestNeighbors:
@@ -525,18 +653,135 @@ class AdCopyVectorstore:
     return relevant_ads
 
 
+def _construct_instruction_for_number_of_headlines_and_descriptions(
+    existing_ad_copy: GoogleAd,
+    ad_format: GoogleAdFormat,
+) -> str:
+  """Returns the instruction with how many headlines / descriptions to generate.
+
+  If the ad already has some headlines and descriptions, then the prompt needs
+  to inclide them and explain to Copycat that it should just generate the
+  missing headlines and descriptions.
+
+  If the existing headlines and descriptions are empty then it just needs to
+  explain the number of headlines and descriptions required for the format.
+
+  If the ad is already complete, then it should raise an error.
+
+  Args:
+    existing_ad_copy: The existing headlines and descriptions.
+    ad_format: The ad format to generate.
+
+  Returns:
+    The instruction for extending the ad copy.
+
+  Raises:
+    ValueError: If the ad is already complete, meaning there is nothing to
+      generate.
+  """
+  n_existing_headlines = len(existing_ad_copy.headlines)
+  n_existing_descriptions = len(existing_ad_copy.descriptions)
+  n_required_headlines = ad_format.max_headlines - n_existing_headlines
+  n_required_descriptions = ad_format.max_descriptions - n_existing_descriptions
+
+  no_headlines = n_existing_headlines == 0
+  no_descriptions = n_existing_descriptions == 0
+  complete_headlines = n_existing_headlines >= ad_format.max_headlines
+  complete_descriptions = n_existing_descriptions >= ad_format.max_descriptions
+
+  # If the ad is already complete, then there is nothing to generate.
+  if complete_headlines and complete_descriptions:
+    LOGGER.error("Trying to generate an ad that is already complete.")
+    raise ValueError("Trying to generate an ad that is already complete.")
+
+  # If the ad is empty, then we need to generate the required headlines and
+  # descriptions.
+  if no_headlines and no_descriptions:
+    return (
+        f"Please write {n_required_headlines} headlines and"
+        f" {n_required_descriptions} descriptions for this ad."
+    )
+
+  instructions = []
+  # First, if there are already some headlines and descriptions, explain this
+  # to Copycat.
+  if not no_headlines and not no_descriptions:
+    instructions.extend([
+        (
+            f"This ad already has {n_existing_headlines} headlines and"
+            f" {n_existing_descriptions} descriptions:\n"
+        ),
+        f"- headlines: {existing_ad_copy.headlines}",
+        f"- descriptions: {existing_ad_copy.descriptions}\n",
+    ])
+  elif not no_headlines:
+    instructions.extend([
+        f"This ad already has {n_existing_headlines} headlines.\n",
+        f"- headlines: {existing_ad_copy.headlines}\n",
+    ])
+  elif not no_descriptions:
+    instructions.extend([
+        f"This ad already has {n_existing_descriptions} descriptions.\n",
+        f"- descriptions: {existing_ad_copy.descriptions}\n",
+    ])
+
+  # If the ad still needs to generate more headlines and descriptions, make it
+  # clear how many are required.
+  if not complete_headlines and not complete_descriptions:
+    instructions.append(
+        f"Please write {n_required_headlines} more headlines and"
+        f" {n_required_descriptions} more descriptions to complete this ad."
+    )
+  elif not complete_headlines and complete_descriptions:
+    instructions.append(
+        f"Please write {n_required_headlines} more headlines to complete this"
+        " ad. You do not need to write any descriptions, as there are enough"
+        " already."
+    )
+  elif not complete_descriptions and complete_headlines:
+    instructions.append(
+        f"Please write {n_required_descriptions} more descriptions to complete"
+        " this ad. You do not need to write any headlines, as there are enough"
+        " already."
+    )
+
+  return "\n".join(instructions)
+
+
 def _construct_new_ad_copy_user_message(
     keywords: str,
+    ad_format: GoogleAdFormat,
+    existing_ad_copy: GoogleAd | None = None,
     keywords_specific_instructions: str = "",
 ) -> generative_models.Content:
-  """Constructs the json content."""
+  """Returns the user message for generating new ad copy.
+
+  Args:
+    keywords: The keywords to generate the ad copy for.
+    ad_format: The ad format to generate.
+    existing_ad_copy: The existing headlines and descriptions for this ad. The
+      prompt will ask Copycat to extend this ad copy to the required number of
+      headlines and descriptions for the ad format. If None, then the ad copy is
+      empty.
+    keywords_specific_instructions: Any additional context to use for the new
+      keywords. This could include things like information from the landing
+      page, information about specific discounts or promotions, or any other
+      relevant information.
+  """
+  if existing_ad_copy is None:
+    existing_ad_copy = GoogleAd(headlines=[], descriptions=[])
+
   content = ""
   if keywords_specific_instructions:
     content += (
         "For the next set of keywords, please consider the following additional"
         f" instructions:\n\n{keywords_specific_instructions}\n\n"
     )
-  content += f"Keywords: {keywords}"
+  content += _construct_instruction_for_number_of_headlines_and_descriptions(
+      existing_ad_copy=existing_ad_copy,
+      ad_format=ad_format,
+  )
+  content += f"\n\nKeywords: {keywords}"
 
   return generative_models.Content(
       role="user",
@@ -561,16 +806,18 @@ def construct_system_instruction(
   Returns:
   The formatted system prompt.
   """
-  if style_guide:
-    system_instruction += "\n\n" + style_guide
   if system_instruction_kwargs:
     system_instruction = system_instruction.format(**system_instruction_kwargs)
+  if style_guide:
+    system_instruction += "\n\n" + style_guide
   return system_instruction
 
 
 def construct_new_ad_copy_prompt(
     example_ads: list[ExampleAd],
     keywords: str,
+    ad_format: GoogleAdFormat,
+    existing_ad_copy: GoogleAd | None = None,
     keywords_specific_instructions: str = "",
 ) -> list[generative_models.Content]:
   """Constructs the full copycat prompt for generating new ad copy.
@@ -588,6 +835,11 @@ def construct_new_ad_copy_prompt(
   Args:
     example_ads: The list of example ads to use as in-context examples.
     keywords: The keywords to generate the ad copy for.
+    ad_format: The ad format to generate.
+    existing_ad_copy: The existing headlines and descriptions for this ad. The
+      prompt will ask Copycat to extend this ad copy to the required number of
+      headlines and descriptions for the ad format. If None, then the ad copy is
+      empty.
     keywords_specific_instructions: Any additional context to use for the new
       keywords. This could include things like information from the landing
       page, information about specific discounts or promotions, or any other
@@ -598,7 +850,17 @@ def construct_new_ad_copy_prompt(
   """
   prompt = []
   for example in reversed(example_ads):
-    prompt.append(_construct_new_ad_copy_user_message(example.keywords))
+    example_ad_format = ad_format.model_copy(
+        update={
+            "max_headlines": example.google_ad.headline_count,
+            "max_descriptions": example.google_ad.description_count,
+        }
+    )
+    prompt.append(
+        _construct_new_ad_copy_user_message(
+            example.keywords, ad_format=example_ad_format
+        )
+    )
     prompt.append(
         generative_models.Content(
             role="model",
@@ -612,9 +874,13 @@ def construct_new_ad_copy_prompt(
 
   prompt.append(
       _construct_new_ad_copy_user_message(
-          keywords, keywords_specific_instructions
+          keywords,
+          ad_format=ad_format,
+          existing_ad_copy=existing_ad_copy,
+          keywords_specific_instructions=keywords_specific_instructions,
       )
   )
+
   return prompt
 
 
@@ -648,13 +914,13 @@ def remove_invalid_headlines_and_descriptions(
   google_ad.headlines = [
       headline
       for headline in google_ad.headlines
-      if len(google_ads.parse_default_dynamic_keyword_insertion(headline))
+      if len(google_ads.parse_google_ads_special_variables(headline))
       <= google_ad_format.max_headline_length
   ]
   google_ad.descriptions = [
       description
       for description in google_ad.descriptions
-      if len(google_ads.parse_default_dynamic_keyword_insertion(description))
+      if len(google_ads.parse_google_ads_special_variables(description))
       <= google_ad_format.max_description_length
   ]
 
@@ -664,20 +930,6 @@ def remove_invalid_headlines_and_descriptions(
     google_ad.descriptions = google_ad.descriptions[
         : google_ad_format.max_descriptions
     ]
-
-
-def _format_instructions(output_schema: type[pydantic.BaseModel]) -> str:
-  """Returns the output schema as a string to be used in the prompt."""
-  elements = []
-  for k, v in output_schema.model_fields.items():
-    elements.append(f"'{k}': {v.annotation}")
-  element_lines = ",".join(map(lambda x: "\n  " + x, elements))
-  return (
-      f"Return: {output_schema.__name__}\n{output_schema.__name__} = "
-      + "{"
-      + element_lines
-      + "\n}"
-  )
 
 
 def async_generate_google_ad_json(
@@ -697,8 +949,6 @@ def async_generate_google_ad_json(
   Returns:
     The generated response, which is a valid json representation of a GoogleAd.
   """
-  model_name = ModelName(request.chat_model_name)
-
   generation_config_params = dict(
       temperature=request.temperature,
       top_k=request.top_k,
@@ -706,27 +956,44 @@ def async_generate_google_ad_json(
       response_mime_type="application/json",
   )
 
-  if model_name is ModelName.GEMINI_1_5_PRO:
-    # Gemini 1.5 pro supports constrained generation, which allows the schema
-    # to be passed as an arguments to the generation config.
-    response_schema = GoogleAd.model_json_schema()
-    response_schema["description"] = (
-        response_schema.pop("description").replace("\n", " ").replace("  ", " ")
-    )
-    generation_config_params["response_schema"] = response_schema
+  generation_config_params["response_schema"] = {
+      "type": "OBJECT",
+      "properties": {
+          "headlines": {
+              "type": "ARRAY",
+              "items": {
+                  "type": "string",
+                  "description": (
+                      "The headlines for the ad. Must be fewer than 30"
+                      " characters."
+                  ),
+              },
+          },
+          "descriptions": {
+              "type": "ARRAY",
+              "items": {
+                  "type": "string",
+                  "description": (
+                      "The descriptions for the ad. Must be fewer than 90"
+                      " characters."
+                  ),
+              },
+          },
+      },
+      "required": ["headlines", "descriptions"],
+  }
 
   generation_config = generative_models.GenerationConfig(
       **generation_config_params
   )
 
-  system_instruction = (
-      f"{request.system_instruction}\n\n{_format_instructions(GoogleAd)}"
-  )
+  LOGGER.debug("System instruction: %s", request.system_instruction)
+  LOGGER.debug("Prompt: %s", request.prompt)
 
   model = generative_models.GenerativeModel(
-      model_name=model_name.value,
+      model_name=request.chat_model_name.value,
       generation_config=generation_config,
-      system_instruction=system_instruction,
+      system_instruction=request.system_instruction,
       safety_settings=request.safety_settings,
   )
 
@@ -756,12 +1023,21 @@ def generate_google_ad_json_batch(
     RuntimeError: If one of the responses is not a valid json representation of
     a GoogleAd. This shouldn't happen unless the gemini api changes.
   """
-  loop = asyncio.get_event_loop()
+  try:
+    loop = asyncio.get_running_loop()
+  except RuntimeError:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
   outputs = loop.run_until_complete(
       asyncio.gather(*list(map(async_generate_google_ad_json, requests)))
   )
   for output in outputs:
     if not isinstance(output, generative_models.GenerationResponse):
+      LOGGER.error(
+          "One of the responses is not a GenerationResponse. Instead got: %s",
+          output,
+      )
       raise RuntimeError(
           "One of the responses is not a GenerationResponse. Instead got:"
           f" {output}"

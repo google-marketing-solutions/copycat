@@ -81,7 +81,7 @@ class TestStyleGuideGenerator(parameterized.TestCase):
       response = generator.generate_style_guide(
           brand_name="Test Brand",
           additional_style_instructions="Write in a fun and friendly tone.",
-          model_name="gemini-1.5-pro-preview-0514",
+          model_name="gemini-1.5-pro-002",
           temperature=0.8,
       )
 
@@ -209,7 +209,7 @@ class TestStyleGuideGenerator(parameterized.TestCase):
       generator.generate_style_guide(
           brand_name="Test Brand",
           additional_style_instructions=additional_style_instructions,
-          model_name="gemini-1.5-pro-preview-0514",
+          model_name="gemini-1.5-pro-002",
           temperature=0.8,
           ad_copy_vectorstore=ad_copy_vectorstore,
       )
