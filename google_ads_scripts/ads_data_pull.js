@@ -288,7 +288,7 @@ function getAllKeywords(campaigns, adGroups) {
 
   for (const row of searchResults) {
     const campaignId = row.campaign.id;
-    const adGroupId = row.adGroup.id
+    const adGroupId = row.adGroup.id;
     const keyword = row.adGroupCriterion.keyword.text;
 
     if (!results[campaignId]) {
