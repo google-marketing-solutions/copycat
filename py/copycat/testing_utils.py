@@ -39,7 +39,7 @@ def _random_embedding(
     text: language_models.TextEmbeddingInput, output_dimensionality: int
 ) -> language_models.TextEmbedding:
   seed = int.from_bytes(
-      (text.text + text.task_type).encode("utf-8"), byteorder="big"
+      (text.text + text.task_type).encode("utf-8"), byteorder="big"  # pyrefly: ignore[unsupported-operation]
   )
   embeddings = (
       np.random.Generator(np.random.MT19937(seed))

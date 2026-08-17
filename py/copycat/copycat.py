@@ -622,9 +622,9 @@ class Copycat:
     if keywords_specific_instructions is None:
       keywords_specific_instructions = [""] * len(keywords)
     if existing_headlines is None:
-      existing_headlines = [None] * len(keywords)
+      existing_headlines = [None] * len(keywords)  # pyrefly: ignore[bad-assignment]
     if existing_descriptions is None:
-      existing_descriptions = [None] * len(keywords)
+      existing_descriptions = [None] * len(keywords)  # pyrefly: ignore[bad-assignment]
 
     system_instruction_kwargs = system_instruction_kwargs or {}
     default_system_instruction_kwargs = {
@@ -653,8 +653,8 @@ class Copycat:
             descriptions=descriptions_i or [],
         )
         for headlines_i, descriptions_i in zip(
-            existing_headlines,
-            existing_descriptions,
+            existing_headlines,  # pyrefly: ignore[bad-argument-type]
+            existing_descriptions,  # pyrefly: ignore[bad-argument-type]
         )
     ]
 
@@ -779,9 +779,9 @@ class Copycat:
     if keywords_specific_instructions is None:
       keywords_specific_instructions = [""] * len(keywords)
     if existing_headlines is None:
-      existing_headlines = [None] * len(keywords)
+      existing_headlines = [None] * len(keywords)  # pyrefly: ignore[bad-assignment]
     if existing_descriptions is None:
-      existing_descriptions = [None] * len(keywords)
+      existing_descriptions = [None] * len(keywords)  # pyrefly: ignore[bad-assignment]
 
     if len(keywords) != len(keywords_specific_instructions):
       LOGGER.error(
@@ -792,12 +792,12 @@ class Copycat:
           "keywords and keywords_specific_instructions must have the same"
           " length."
       )
-    if len(existing_headlines) != len(keywords):
+    if len(existing_headlines) != len(keywords):  # pyrefly: ignore[bad-argument-type]
       LOGGER.error("keywords and existing_headlines must have the same length.")
       raise ValueError(
           "keywords and existing_headlines must have the same length."
       )
-    if len(existing_descriptions) != len(keywords):
+    if len(existing_descriptions) != len(keywords):  # pyrefly: ignore[bad-argument-type]
       LOGGER.error(
           "keywords and existing_descriptions must have the same length."
       )
@@ -924,9 +924,9 @@ class Copycat:
 
     generated_responses = self.generate_new_ad_copy(
         keywords=keywords,
-        keywords_specific_instructions=keywords_specific_instructions,
-        existing_headlines=existing_headlines,
-        existing_descriptions=existing_descriptions,
+        keywords_specific_instructions=keywords_specific_instructions,  # pyrefly: ignore[bad-argument-type]
+        existing_headlines=existing_headlines,  # pyrefly: ignore[bad-argument-type]
+        existing_descriptions=existing_descriptions,  # pyrefly: ignore[bad-argument-type]
         **static_params,
     )
     return pd.Series(generated_responses, index=data.index)

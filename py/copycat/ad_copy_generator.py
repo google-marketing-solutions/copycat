@@ -254,7 +254,7 @@ class AdCopyVectorstore:
           for ad_markdown in texts_batch
       ]
       embedding_outputs = embedding_model.get_embeddings(
-          embedding_inputs, output_dimensionality=dimensionality
+          embedding_inputs, output_dimensionality=dimensionality  # pyrefly: ignore[bad-argument-type]
       )
       embeddings.extend([emb.values for emb in embedding_outputs])
 
@@ -994,7 +994,7 @@ def async_generate_google_ad_json(
       response_mime_type="application/json",
   )
 
-  generation_config_params["response_schema"] = {
+  generation_config_params["response_schema"] = {  # pyrefly: ignore[bad-assignment]
       "type": "OBJECT",
       "properties": {
           "headlines": {
@@ -1081,7 +1081,7 @@ def generate_google_ad_json_batch(
           f" {output}"
       )
 
-  return outputs
+  return outputs  # pyrefly: ignore[bad-return]
 
 
 def extract_urls_for_keyword_instructions(

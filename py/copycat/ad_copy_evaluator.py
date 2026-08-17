@@ -316,7 +316,7 @@ class AdCopyEvaluator:
       )
 
       style_similarity = _normalized_cosine_similarity(
-          most_similar_training_ad_embeddings, ad_embedding
+          most_similar_training_ad_embeddings, ad_embedding  # pyrefly: ignore[bad-argument-type]
       )
 
       similarity_metrics.append({

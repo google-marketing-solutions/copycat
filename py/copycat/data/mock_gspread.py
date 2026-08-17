@@ -227,7 +227,7 @@ class MockWorksheet:
   ) -> None:
     """Updates the data in the worksheet in batches."""
     for batch in batches:
-      self.update(batch["values"], range_name=batch["range"])
+      self.update(batch["values"], range_name=batch["range"])  # pyrefly: ignore[bad-argument-type]
 
   def insert_row(self, values: list[Any], index: int) -> None:
     """Inserts a row at the given index.
