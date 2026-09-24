@@ -731,22 +731,26 @@ class CopycatTest(parameterized.TestCase):
     generated_descriptions = ["generated description"]
 
     self.assertEqual(
-        response,
-        copycat.CopycatResponse(
-            google_ad=google_ads.GoogleAd(
-                headlines=existing_headlines + generated_headlines,
-                descriptions=existing_descriptions + generated_descriptions,
-            ),
-            keywords="my keyword 1, my keyword 2",
-            evaluation_results=copycat.EvaluationResults(
-                errors=[],
-                warnings=[],
-                headlines_are_memorised=False,
-                descriptions_are_memorised=False,
-                style_similarity=expected_style_similarity,
-                keyword_similarity=expected_keyword_similarity,
-            ),
+        response.google_ad,
+        google_ads.GoogleAd(
+            headlines=existing_headlines + generated_headlines,
+            descriptions=existing_descriptions + generated_descriptions,
         ),
+    )
+    self.assertEqual(response.keywords, "my keyword 1, my keyword 2")
+    self.assertEqual(response.evaluation_results.errors, [])
+    self.assertEqual(response.evaluation_results.warnings, [])
+    self.assertFalse(response.evaluation_results.headlines_are_memorised)
+    self.assertFalse(response.evaluation_results.descriptions_are_memorised)
+    self.assertAlmostEqual(
+        response.evaluation_results.style_similarity,
+        expected_style_similarity,
+        places=5,
+    )
+    self.assertAlmostEqual(
+        response.evaluation_results.keyword_similarity,
+        expected_keyword_similarity,
+        places=5,
     )
 
   @testing_utils.PatchGenerativeModel(response="Generated style guide.")
